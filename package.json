@@ -1,0 +1,12 @@
+{
+  "name": "faceit-team-stats",
+  "version": "1.0.0",
+  "description": "FACEIT team statistics analyzer",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@vercel/node": "^latest"
+  }
+}

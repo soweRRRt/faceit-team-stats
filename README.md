@@ -1,2 +1,5 @@
-# faceit-team-stats
-FACEIT Team Statistics Analyzer
+# FACEIT Team Statistics
+
+API для получения статистики команды FACEIT за последние 3 месяца.
+
+## Использование

@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/team-stats.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/team-stats",
+      "methods": ["GET", "OPTIONS"],
+      "dest": "/api/team-stats.js"
+    }
+  ]
+}
