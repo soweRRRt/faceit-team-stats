@@ -73,7 +73,8 @@ async function getTeamStats(teamId, apiKey) {
 
   // 3. Для каждого игрока получаем историю матчей за 3 месяца
   const threeMonthsAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
-  const teamMatches = new Map();
+  const allMatches = new Map(); // Все уникальные матчи
+  const teamPlayerNames = new Set(players.map(p => p.nickname));
 
   for (const player of players) {
     console.log(`Getting matches for ${player.nickname}...`);
@@ -114,17 +115,16 @@ async function getTeamStats(teamId, apiKey) {
           break;
         }
 
-        // Проверяем что в матче только игроки из нашей команды
-        if (await isTeamMatch(match, players)) {
-          if (!teamMatches.has(match.match_id)) {
-            teamMatches.set(match.match_id, {
-              id: match.match_id,
-              date: new Date(match.finished_at * 1000).toISOString(),
-              map: match.voting?.map?.pick?.[0] || 'Unknown',
-              result: match.results?.winner || 'Unknown',
-              score: match.results?.score || {}
-            });
-          }
+        // Сохраняем матч если его еще нет в коллекции
+        if (!allMatches.has(match.match_id)) {
+          allMatches.set(match.match_id, {
+            id: match.match_id,
+            date: new Date(match.finished_at * 1000).toISOString(),
+            finished_at: match.finished_at,
+            teams: match.teams,
+            results: match.results,
+            voting: match.voting
+          });
         }
       }
 
@@ -138,8 +138,38 @@ async function getTeamStats(teamId, apiKey) {
     }
   }
 
-  // 4. Анализируем статистику по картам
-  const mapStats = analyzeMapStatistics(Array.from(teamMatches.values()));
+  console.log(`Total matches found: ${allMatches.size}`);
+
+  // 4. Фильтруем матчи где играла команда (минимум 5 игроков из нашей команды)
+  const teamMatches = [];
+  
+  for (const match of allMatches.values()) {
+    const playersInMatch = getPlayersFromMatch(match);
+    const ourPlayersInMatch = playersInMatch.filter(player => 
+      teamPlayerNames.has(player.nickname)
+    );
+    
+    // Если в матче 5 или более игроков из нашей команды - это командный матч
+    if (ourPlayersInMatch.length >= 5) {
+      // Получаем детали матча для точного определения карты
+      const matchDetails = await getMatchDetails(match.id, apiKey);
+      
+      teamMatches.push({
+        id: match.id,
+        date: match.date,
+        map: getMapName(matchDetails || match),
+        result: getMatchResult(match, ourPlayersInMatch),
+        score: match.results?.score || {},
+        ourPlayers: ourPlayersInMatch.map(p => p.nickname),
+        totalOurPlayers: ourPlayersInMatch.length
+      });
+    }
+  }
+
+  console.log(`Team matches (with 5+ players): ${teamMatches.length}`);
+
+  // 5. Анализируем статистику по картам
+  const mapStats = analyzeMapStatistics(teamMatches);
 
   return {
     team: {
@@ -152,29 +182,84 @@ async function getTeamStats(teamId, apiKey) {
       to: new Date().toISOString()
     },
     players: players.map(p => p.nickname),
-    totalMatches: teamMatches.size,
+    totalMatches: teamMatches.length,
     mapStatistics: mapStats,
-    recentMatches: Array.from(teamMatches.values())
+    recentMatches: teamMatches
       .sort((a, b) => new Date(b.date) - new Date(a.date))
-      .slice(0, 10)
+      .slice(0, 10),
+    debug: {
+      allMatchesFound: allMatches.size,
+      teamMatchesFound: teamMatches.length
+    }
   };
 }
 
-async function isTeamMatch(match, teamPlayers) {
-  // Упрощенная проверка - считаем что матч подходит если в нем есть игроки команды
-  const teamPlayerNames = new Set(teamPlayers.map(p => p.nickname));
+function getPlayersFromMatch(match) {
+  const players = [];
   
   if (match.teams) {
     for (const team of Object.values(match.teams)) {
       for (const player of team.players || []) {
-        if (teamPlayerNames.has(player.nickname)) {
-          return true;
-        }
+        players.push({
+          nickname: player.nickname,
+          team: team.team_id
+        });
       }
     }
   }
   
-  return false;
+  return players;
+}
+
+async function getMatchDetails(matchId, apiKey) {
+  try {
+    const response = await fetch(`https://open.faceit.com/data/v4/matches/${matchId}`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (error) {
+    console.warn(`Could not fetch details for match ${matchId}`);
+  }
+  return null;
+}
+
+function getMapName(matchData) {
+  // Пробуем разные способы получить название карты
+  if (matchData.voting?.map?.pick?.[0]) {
+    return matchData.voting.map.pick[0];
+  }
+  if (matchData.voting?.map?.entities?.[0]?.name) {
+    return matchData.voting.map.entities[0].name;
+  }
+  if (matchData.voting?.map?.entities?.[0]?.guid) {
+    // Пробуем извлечь название из GUID
+    const guid = matchData.voting.map.entities[0].guid;
+    if (guid.includes('de_')) {
+      return guid.split('_').slice(0, 2).join('_');
+    }
+    return guid;
+  }
+  return 'Unknown';
+}
+
+function getMatchResult(match, ourPlayers) {
+  if (!match.results?.winner) return 'Unknown';
+  
+  const winnerTeam = match.results.winner;
+  
+  // Проверяем есть ли наши игроки в победившей команде
+  const winningTeamPlayers = getPlayersFromMatch(match).filter(p => p.team === winnerTeam);
+  const ourWinningPlayers = winningTeamPlayers.filter(p => 
+    ourPlayers.some(op => op.nickname === p.nickname)
+  );
+  
+  return ourWinningPlayers.length > 0 ? 'Win' : 'Loss';
 }
 
 function analyzeMapStatistics(matches) {
@@ -196,15 +281,17 @@ function analyzeMapStatistics(matches) {
     const stats = mapStats[mapName];
     stats.totalMatches++;
 
-    // Простая проверка победы (можно улучшить)
-    if (match.result && match.result !== 'Unknown') {
+    if (match.result === 'Win') {
       stats.wins++;
     } else {
       stats.losses++;
     }
 
-    stats.winRate = (stats.wins / stats.totalMatches) * 100;
+    stats.winRate = stats.totalMatches > 0 ? 
+      Math.round((stats.wins / stats.totalMatches) * 100) : 0;
   });
 
-  return Object.values(mapStats).sort((a, b) => b.totalMatches - a.totalMatches);
+  return Object.values(mapStats)
+    .sort((a, b) => b.totalMatches - a.totalMatches)
+    .filter(map => map.map !== 'Unknown');
 }
